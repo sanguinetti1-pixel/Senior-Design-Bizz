@@ -66,7 +66,6 @@ volatile float pf_filt = 0.0f;      // filtered PF for stability
 
 static int8_t i_polarity = -1;
 static uint8_t neg_count = 0;
-
 static uint32_t last_cross_ms = 0;
 static uint8_t  armed_rise = 1;
 static uint32_t win_t0 = 0;
@@ -78,6 +77,17 @@ volatile uint8_t  cap_done = 0;
 volatile float pf_now = 0.0f;
 volatile float pf_i1  = 0.0f;
 volatile float pf_v1  = 0.0f;
+
+
+//DC ADD Variables....4/1
+volatile uint16_t dbg_idc = 0;      // raw ADC code for PA3 (DC current)
+volatile uint16_t dbg_vdc = 0;      // raw ADC code for PA4 (DC voltage)
+
+volatile float idc_adc_volts = 0.0f; // sensor voltage seen at PA3
+volatile float vdc_adc_volts = 0.0f; // sensor voltage seen at PA4
+
+volatile float dc_current = 0.0f;    // final DC current in amps
+volatile float dc_voltage = 0.0f;    // final DC voltage in volts
 
 /* USER CODE END PV */
 
@@ -92,31 +102,42 @@ static void MX_ADC1_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-static void adc_read_two(ADC_HandleTypeDef *hadc, uint16_t *ch0, uint16_t *ch1)
+static void adc_read_four(ADC_HandleTypeDef *hadc,
+                          uint16_t *ch0, uint16_t *ch1,
+                          uint16_t *ch2, uint16_t *ch3)
 {
     if (HAL_ADC_Start(hadc) != HAL_OK) {
-        *ch0 = 0xEEEF;
-        *ch1 = 0xEEEF;
+        *ch0 = *ch1 = *ch2 = *ch3 = 0xEEEF;
         return;
     }
 
-    // Conversion #1 (Rank 1 = CH0)
     if (HAL_ADC_PollForConversion(hadc, 100) != HAL_OK) {
         HAL_ADC_Stop(hadc);
-        *ch0 = 0xFFFF;
-        *ch1 = 0xFFFF;
+        *ch0 = *ch1 = *ch2 = *ch3 = 0xFFFF;
         return;
     }
-    *ch0 = (uint16_t)HAL_ADC_GetValue(hadc);
+    *ch0 = (uint16_t)HAL_ADC_GetValue(hadc);   // Rank 1
 
-    // Conversion #2 (Rank 2 = CH1)
     if (HAL_ADC_PollForConversion(hadc, 100) != HAL_OK) {
         HAL_ADC_Stop(hadc);
-        *ch0 = 0xFFFF;
-        *ch1 = 0xFFFF;
+        *ch0 = *ch1 = *ch2 = *ch3 = 0xFFFF;
         return;
     }
-    *ch1 = (uint16_t)HAL_ADC_GetValue(hadc);
+    *ch1 = (uint16_t)HAL_ADC_GetValue(hadc);   // Rank 2
+
+    if (HAL_ADC_PollForConversion(hadc, 100) != HAL_OK) {
+        HAL_ADC_Stop(hadc);
+        *ch0 = *ch1 = *ch2 = *ch3 = 0xFFFF;
+        return;
+    }
+    *ch2 = (uint16_t)HAL_ADC_GetValue(hadc);   // Rank 3
+
+    if (HAL_ADC_PollForConversion(hadc, 100) != HAL_OK) {
+        HAL_ADC_Stop(hadc);
+        *ch0 = *ch1 = *ch2 = *ch3 = 0xFFFF;
+        return;
+    }
+    *ch3 = (uint16_t)HAL_ADC_GetValue(hadc);   // Rank 4
 
     HAL_ADC_Stop(hadc);
 }
@@ -164,6 +185,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+
       // ============================================================
       // 0) CONSTANTS / SCALE FACTORS
       // ============================================================
@@ -187,6 +209,14 @@ int main(void)
       const float CT_RATIO = 1000.0f;
       const float N_TURNS = 8.0f;
       const float K_I = 1.13f;
+
+      // DC Stuff 4/1
+      const float DC_ADC_REF = 3.3f;
+      const float DC_COUNTS_TO_VOLTS = DC_ADC_REF / 4095.0f;
+      const float CURRENT_V_PER_AMP = 1.375f;
+      const float VOLTAGE_RATIO = (10000.0f + 5600.0f) / 5600.0f;
+
+
 
       // Zero-cross deadband (counts) to avoid noise-triggered crossings
       const int32_t ZC_DB = 30;
@@ -228,7 +258,15 @@ int main(void)
       // ============================================================
       // 2) SAMPLE ADC CHANNELS (PA0 = voltage, PA1 = current)
       // ============================================================
-      adc_read_two(&hadc1, &dbg_v, &dbg_iac);
+      // DC Update Adds 4/1
+      adc_read_four(&hadc1, &dbg_v, &dbg_iac, &dbg_idc, &dbg_vdc);
+
+      // DC update 4/1
+      idc_adc_volts = dbg_idc * DC_COUNTS_TO_VOLTS;
+      vdc_adc_volts = dbg_vdc * DC_COUNTS_TO_VOLTS;
+
+      dc_current = idc_adc_volts / CURRENT_V_PER_AMP;
+      dc_voltage = vdc_adc_volts * VOLTAGE_RATIO;
 
       // Track min/max of voltage raw ADC (debug / sanity check)
       if (dbg_v < vmin) vmin = dbg_v;
@@ -552,7 +590,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 2;
+  hadc1.Init.NbrOfConversion = 4;
   hadc1.Init.DMAContinuousRequests = DISABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
@@ -577,6 +615,21 @@ static void MX_ADC1_Init(void)
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
+  }
+
+ // DC Update 4/1
+  sConfig.Channel = ADC_CHANNEL_3;
+  sConfig.Rank = 3;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+      Error_Handler();
+  }
+
+  sConfig.Channel = ADC_CHANNEL_4;
+  sConfig.Rank = 4;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+      Error_Handler();
   }
   /* USER CODE BEGIN ADC1_Init 2 */
 
