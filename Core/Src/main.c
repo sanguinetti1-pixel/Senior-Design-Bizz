@@ -211,10 +211,14 @@ int main(void)
       const float K_I = 1.13f;
 
       // DC Stuff 4/1
-      const float DC_ADC_REF = 3.3f;
-      const float DC_COUNTS_TO_VOLTS = DC_ADC_REF / 4095.0f;
-      const float CURRENT_V_PER_AMP = 1.375f;
-      const float VOLTAGE_RATIO = (10000.0f + 5600.0f) / 5600.0f;
+      // DC sensing constants
+       const float DC_ADC_REF = 2.66f;
+       const float DC_COUNTS_TO_VOLTS = DC_ADC_REF / 4095.0f;
+
+     // ACS712 calibration
+       const float ACS712_ZERO_VOLTAGE = 2.55f;   // measured output at 0 A
+       const float ACS712_SENSITIVITY  = 0.185f;  // 5A version = 185 mV/A
+       const float VOLTAGE_RATIO = (100000.0f + 5600.0f) / 5600.0f;
 
 
 
@@ -262,10 +266,12 @@ int main(void)
       adc_read_four(&hadc1, &dbg_v, &dbg_iac, &dbg_idc, &dbg_vdc);
 
       // DC update 4/1
-      idc_adc_volts = dbg_idc * DC_COUNTS_TO_VOLTS;
+      idc_adc_volts = ((float)dbg_idc * DC_ADC_REF) / 4095.0f;
       vdc_adc_volts = dbg_vdc * DC_COUNTS_TO_VOLTS;
+      // ACS712 current calculation
+      dc_current = (idc_adc_volts - ACS712_ZERO_VOLTAGE) / ACS712_SENSITIVITY;
 
-      dc_current = idc_adc_volts / CURRENT_V_PER_AMP;
+
       dc_voltage = vdc_adc_volts * VOLTAGE_RATIO;
 
       // Track min/max of voltage raw ADC (debug / sanity check)
@@ -602,7 +608,7 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = 1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_144CYCLES;
+  sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -618,7 +624,7 @@ static void MX_ADC1_Init(void)
   }
 
  // DC Update 4/1
-  sConfig.Channel = ADC_CHANNEL_3;
+  sConfig.Channel = ADC_CHANNEL_5;
   sConfig.Rank = 3;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
